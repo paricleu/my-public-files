@@ -216,11 +216,11 @@
   function saveToken(token, expiresInSec) {
     accessToken = token;
     tokenExpiry = Date.now() + expiresInSec * 1000;
-    sessionStorage.setItem(TOKEN_KEY, JSON.stringify({ token, expiry: tokenExpiry }));
+    localStorage.setItem(TOKEN_KEY, JSON.stringify({ token, expiry: tokenExpiry }));
   }
 
   function loadToken() {
-    const raw = sessionStorage.getItem(TOKEN_KEY);
+    const raw = localStorage.getItem(TOKEN_KEY);
     if (!raw) return false;
     try {
       const { token, expiry } = JSON.parse(raw);
