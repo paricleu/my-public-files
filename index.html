@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>paricleu/my-public-files</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #1c1c1e;
+    --muted: #6b6b70;
+    --accent: #3b6fe0;
+    --border: rgba(0, 0, 0, 0.08);
+    --hover: rgba(0, 0, 0, 0.03);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1c1c1e;
+      --fg: #f2f2f4;
+      --muted: #9a9aa2;
+      --accent: #7aa2ff;
+      --border: rgba(255, 255, 255, 0.1);
+      --hover: rgba(255, 255, 255, 0.04);
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+    padding: 32px 16px;
+  }
+  main {
+    max-width: 640px;
+    margin: 0 auto;
+  }
+  h1 {
+    font-size: 18px;
+    margin: 0 0 4px;
+  }
+  #breadcrumb {
+    color: var(--muted);
+    font-size: 13px;
+    margin-bottom: 20px;
+  }
+  #breadcrumb a {
+    color: var(--muted);
+    text-decoration: none;
+  }
+  #breadcrumb a:hover { text-decoration: underline; }
+  ul {
+    list-style: none;
+    margin: 0;
+    padding: 0;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    overflow: hidden;
+  }
+  li a {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 14px;
+    color: var(--fg);
+    text-decoration: none;
+    font-size: 14px;
+    border-bottom: 1px solid var(--border);
+  }
+  li:last-child a { border-bottom: none; }
+  li a:hover { background: var(--hover); }
+  .icon { width: 18px; text-align: center; flex-shrink: 0; }
+  .size { margin-left: auto; color: var(--muted); font-size: 12px; }
+  #status { color: var(--muted); font-size: 13px; padding: 10px 14px; }
+</style>
+</head>
+<body>
+<main>
+  <h1>paricleu/my-public-files</h1>
+  <div id="breadcrumb"></div>
+  <ul id="listing"><li id="status-li"><div id="status">Loading…</div></li></ul>
+</main>
+
+<script>
+  const OWNER = 'paricleu';
+  const REPO = 'my-public-files';
+  const BRANCH = 'main';
+
+  function currentPath() {
+    // Path is stored in the URL hash so linking/bookmarking a subfolder works
+    // without needing any server-side routing (GitHub Pages is static).
+    return decodeURIComponent(location.hash.replace(/^#/, ''));
+  }
+
+  function pagesUrl(path) {
+    return `https://${OWNER}.github.io/${REPO}/${path}`;
+  }
+
+  async function render() {
+    const path = currentPath();
+    const ul = document.getElementById('listing');
+    ul.innerHTML = '<li><div id="status">Loading…</div></li>';
+    renderBreadcrumb(path);
+
+    const apiUrl = `https://api.github.com/repos/${OWNER}/${REPO}/contents/${path}?ref=${BRANCH}`;
+    let entries;
+    try {
+      const res = await fetch(apiUrl);
+      if (!res.ok) throw new Error('GitHub API returned ' + res.status);
+      entries = await res.json();
+    } catch (err) {
+      ul.innerHTML = `<li><div id="status">Could not load listing: ${err.message}</div></li>`;
+      return;
+    }
+
+    entries.sort((a, b) => {
+      if (a.type !== b.type) return a.type === 'dir' ? -1 : 1;
+      return a.name.localeCompare(b.name);
+    });
+
+    ul.innerHTML = '';
+    entries
+      .filter((e) => e.name !== 'index.html' || path !== '') // hide the browser's own file at root
+      .forEach((entry) => {
+        const li = document.createElement('li');
+        const a = document.createElement('a');
+        if (entry.type === 'dir') {
+          a.href = '#' + encodeURIComponent(entry.path);
+          a.innerHTML = `<span class="icon">📁</span><span>${entry.name}/</span>`;
+        } else {
+          a.href = pagesUrl(entry.path);
+          a.innerHTML = `<span class="icon">📄</span><span>${entry.name}</span><span class="size">${formatSize(entry.size)}</span>`;
+        }
+        li.appendChild(a);
+        ul.appendChild(li);
+      });
+
+    if (entries.length === 0) {
+      ul.innerHTML = '<li><div id="status">Empty folder</div></li>';
+    }
+  }
+
+  function renderBreadcrumb(path) {
+    const crumb = document.getElementById('breadcrumb');
+    const parts = path ? path.split('/') : [];
+    let html = '<a href="#">root</a>';
+    let acc = '';
+    parts.forEach((part) => {
+      acc += (acc ? '/' : '') + part;
+      html += ' / <a href="#' + encodeURIComponent(acc) + '">' + part + '</a>';
+    });
+    crumb.innerHTML = html;
+  }
+
+  function formatSize(bytes) {
+    if (bytes < 1024) return bytes + ' B';
+    if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  }
+
+  window.addEventListener('hashchange', render);
+  render();
+</script>
+</body>
+</html>

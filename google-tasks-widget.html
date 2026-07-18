@@ -115,9 +115,16 @@
     padding: 8px 14px;
     font-size: 14px;
     transition: background 0.2s ease;
+    cursor: grab;
   }
   #task-list li.done {
     background: var(--done-bg);
+  }
+  #task-list li.dragging {
+    opacity: 0.4;
+  }
+  #task-list li.drag-over {
+    box-shadow: inset 0 2px 0 var(--accent);
   }
   #task-list li.done span {
     text-decoration: line-through;
@@ -326,11 +333,9 @@
     );
     if (!res.ok) return showError('Could not load tasks (' + res.status + ')');
     const data = await res.json();
+    const items = data.items || [];
     const ul = document.getElementById('task-list');
     ul.innerHTML = '';
-    const items = (data.items || []).slice().sort((a, b) =>
-      (a.position || '').localeCompare(b.position || '')
-    );
     if (items.length === 0) {
       const li = document.createElement('li');
       li.className = 'empty';
@@ -338,8 +343,42 @@
       ul.appendChild(li);
       return;
     }
-    items.forEach((task) => {
+    const roots = buildTaskTree(items);
+    renderTaskTree(roots, listId, ul, 0);
+  }
+
+  // Google returns subtasks as regular task objects with a `parent` field
+  // pointing at their parent task's id. Group them so subtasks render
+  // nested under their parent instead of as siblings.
+  function buildTaskTree(items) {
+    const byId = {};
+    items.forEach((t) => { byId[t.id] = { ...t, children: [] }; });
+    const roots = [];
+    items.forEach((t) => {
+      if (t.parent && byId[t.parent]) {
+        byId[t.parent].children.push(byId[t.id]);
+      } else {
+        roots.push(byId[t.id]);
+      }
+    });
+    const sortRec = (list) => {
+      list.sort((a, b) => (a.position || '').localeCompare(b.position || ''));
+      list.forEach((t) => sortRec(t.children));
+    };
+    sortRec(roots);
+    return roots;
+  }
+
+  // Renders a flat <li> list with indentation per depth (rather than nested
+  // <ul>s) so drag-and-drop reordering logic only has to compare a
+  // data-parent-id attribute, not walk the DOM tree.
+  function renderTaskTree(tasks, listId, container, depth) {
+    tasks.forEach((task) => {
       const li = document.createElement('li');
+      li.dataset.taskId = task.id;
+      li.dataset.parentId = task.parent || '';
+      li.draggable = true;
+      li.style.paddingLeft = (14 + depth * 22) + 'px';
       const cb = document.createElement('input');
       cb.type = 'checkbox';
       cb.onchange = () => completeTask(listId, task.id, li);
@@ -347,8 +386,59 @@
       span.textContent = task.title || '(untitled)';
       li.appendChild(cb);
       li.appendChild(span);
-      ul.appendChild(li);
+      attachDragHandlers(li, listId);
+      container.appendChild(li);
+      if (task.children.length) renderTaskTree(task.children, listId, container, depth + 1);
     });
+  }
+
+  // ---- Drag-and-drop reordering ----
+  // Only allows reordering within the same parent group (i.e. among top-level
+  // tasks, or among the subtasks of one parent) — dragging a task to become a
+  // subtask of a different parent isn't handled here.
+  let draggedEl = null;
+
+  function attachDragHandlers(li, listId) {
+    li.addEventListener('dragstart', () => {
+      draggedEl = li;
+      li.classList.add('dragging');
+    });
+    li.addEventListener('dragend', () => {
+      li.classList.remove('dragging');
+      draggedEl = null;
+    });
+    li.addEventListener('dragover', (e) => {
+      e.preventDefault();
+      if (draggedEl && draggedEl !== li && draggedEl.dataset.parentId === li.dataset.parentId) {
+        li.classList.add('drag-over');
+      }
+    });
+    li.addEventListener('dragleave', () => li.classList.remove('drag-over'));
+    li.addEventListener('drop', async (e) => {
+      e.preventDefault();
+      li.classList.remove('drag-over');
+      if (!draggedEl || draggedEl === li) return;
+      if (draggedEl.dataset.parentId !== li.dataset.parentId) return; // different group — ignore
+      const ul = document.getElementById('task-list');
+      ul.insertBefore(draggedEl, li);
+      const parentId = draggedEl.dataset.parentId || null;
+      const prev = draggedEl.previousElementSibling;
+      const previousId = (prev && prev.dataset.parentId === (parentId || '')) ? prev.dataset.taskId : null;
+      await moveTask(listId, draggedEl.dataset.taskId, parentId, previousId);
+      loadTasks(listId);
+    });
+  }
+
+  async function moveTask(listId, taskId, parentId, previousId) {
+    const params = new URLSearchParams();
+    if (parentId) params.set('parent', parentId);
+    if (previousId) params.set('previous', previousId);
+    const qs = params.toString();
+    const res = await apiFetch(
+      `${API_ROOT}/lists/${listId}/tasks/${taskId}/move${qs ? '?' + qs : ''}`,
+      { method: 'POST' }
+    );
+    if (!res.ok) showError('Could not reorder task (' + res.status + ')');
   }
 
   async function completeTask(listId, taskId, li) {
