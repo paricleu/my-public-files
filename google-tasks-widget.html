@@ -99,8 +99,8 @@
   .icon-btn {
     background: transparent;
     color: var(--muted);
-    padding: 4px 8px;
-    font-size: 16px;
+    padding: 6px 10px;
+    font-size: 20px;
     font-weight: normal;
   }
 
@@ -292,15 +292,15 @@
   }
 
   function applyAppearance(appearance) {
-    const app = document.getElementById('app');
+    const root = document.documentElement;
     if (!appearance) {
       // fall back to the automatic light/dark defaults defined in CSS
-      app.style.removeProperty('--bg-rgb');
-      app.style.removeProperty('--bg-alpha');
+      root.style.removeProperty('--bg-rgb');
+      root.style.removeProperty('--bg-alpha');
       return;
     }
-    app.style.setProperty('--bg-rgb', hexToRgbTriplet(appearance.color));
-    app.style.setProperty('--bg-alpha', appearance.opacity / 100);
+    root.style.setProperty('--bg-rgb', hexToRgbTriplet(appearance.color));
+    root.style.setProperty('--bg-alpha', appearance.opacity / 100);
   }
 
   function defaultAppearanceSeed() {
