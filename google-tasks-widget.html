@@ -303,7 +303,7 @@
     // ---------------------------------------------------------------------
     const CLIENT_ID = '351806837945-anjvm2o97jnum79akg28jc6nut6euat7.apps.googleusercontent.com';
     // Replace this with your actual deployed Cloudflare Worker URL
-    const PROXY_URL = 'https://gtasks-token-proxy.patrick-leugers.workers.dev'; 
+    const PROXY_URL = 'https://gtasks-token-proxy.patrick-leugers.workers.dev';
     const REDIRECT_URI = window.location.origin + window.location.pathname;
     const SCOPE = 'https://www.googleapis.com/auth/tasks';
 
@@ -378,7 +378,7 @@
       }
     }
 
-    // ---- OAuth Engine (Code Flow via Cloudflare Proxy) ----
+    // ---- OAuth Engine (Popup Flow) ----
     function startAuthorizationFlow() {
       const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
       authUrl.searchParams.set('client_id', CLIENT_ID);
@@ -388,8 +388,24 @@
       authUrl.searchParams.set('access_type', 'offline');
       authUrl.searchParams.set('prompt', 'consent');
 
-      window.location.href = authUrl.toString();
+      const width = 500;
+      const height = 600;
+      const left = (window.screen.width - width) / 2;
+      const top = (window.screen.height - height) / 2;
+
+      window.open(
+        authUrl.toString(),
+        'GoogleAuth',
+        `width=${width},height=${height},top=${top},left=${left}`
+      );
     }
+
+    window.addEventListener('message', async (event) => {
+      if (event.origin !== window.location.origin) return;
+      if (event.data && event.data.type === 'OAUTH_CODE') {
+        await handleAuthorizationCode(event.data.code);
+      }
+    });
 
     async function handleAuthorizationCode(code) {
       try {
@@ -444,7 +460,7 @@
     // ---- API Wrapper ----
     async function apiFetch(url, options = {}) {
       await ensureValidToken();
-      
+
       const doFetch = () => fetch(url, {
         ...options,
         headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` },
