@@ -476,6 +476,26 @@
 
     // ---- App Lifecycle ----
     window.onload = async () => {
+      // 1. Check if this instance was opened as a popup callback from Google
+      const urlParams = new URLSearchParams(window.location.search);
+      const authCode = urlParams.get('code');
+
+      if (authCode && window.opener) {
+        // Send the authorization code back to the parent iframe and close the popup
+        window.opener.postMessage({ type: 'OAUTH_CODE', code: authCode }, window.location.origin);
+        window.close();
+        return;
+      }
+
+      // 2. Listen for the authorization code sent from the popup window
+      window.addEventListener('message', async (event) => {
+        if (event.origin !== window.location.origin) return;
+        if (event.data && event.data.type === 'OAUTH_CODE') {
+          await handleAuthorizationCode(event.data.code);
+        }
+      });
+
+      // 3. Attach UI Event Handlers
       document.getElementById('connect-btn').onclick = () => startAuthorizationFlow();
       document.getElementById('refresh-btn').onclick = () => loadTasks(currentListId);
       document.getElementById('add-form').onsubmit = (e) => {
@@ -487,7 +507,7 @@
         loadTasks(currentListId);
       };
 
-      // Settings wiring
+      // 4. Settings Panel Wiring
       const settingsBtn = document.getElementById('settings-btn');
       const settingsPanel = document.getElementById('settings-panel');
       const colorInput = document.getElementById('bg-color-input');
@@ -518,13 +538,8 @@
         applyAppearance(null);
       };
 
-      // Check if arriving back from Google OAuth redirect
-      const urlParams = new URLSearchParams(window.location.search);
-      const authCode = urlParams.get('code');
-
-      if (authCode) {
-        await handleAuthorizationCode(authCode);
-      } else if (loadAuthState()) {
+      // 5. Initialize State
+      if (loadAuthState()) {
         init();
       } else {
         document.getElementById('connect-screen').hidden = false;
