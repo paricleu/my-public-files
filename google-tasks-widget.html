@@ -393,11 +393,16 @@
       const left = (window.screen.width - width) / 2;
       const top = (window.screen.height - height) / 2;
 
-      window.open(
+      // Using '_blank' ensures popups escape extension iframe limits cleanly
+      const popup = window.open(
         authUrl.toString(),
-        'GoogleAuth',
-        `width=${width},height=${height},top=${top},left=${left}`
+        '_blank',
+        `width=${width},height=${height},top=${top},left=${left},scrollbars=yes,status=yes`
       );
+
+      if (!popup || popup.closed || typeof popup.closed === 'undefined') {
+        showError('Popup blocked. Please allow popups for Renewed Tab to connect.');
+      }
     }
 
     window.addEventListener('message', async (event) => {
