@@ -5,7 +5,6 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
   <title>Google Tasks Widget</title>
-  <script src="https://accounts.google.com/gsi/client" async defer></script>
   <style>
     :root {
       --bg-rgb: 255, 255, 255;
@@ -33,24 +32,30 @@
     html {
       background: transparent !important;
       color-scheme: normal !important;
+      height: 100vh;
+      width: 100vw;
     }
 
     body {
       margin: 0;
       padding: 0;
-      height: 100%;
+      height: 100vh;
+      width: 100vw;
       font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
       color: var(--fg);
       background: transparent !important;
+      overflow: hidden;
     }
 
     #app {
       display: flex;
       flex-direction: column;
       height: 100%;
+      max-height: 100vh;
       background: var(--bg);
       border-radius: 12px;
       overflow: hidden;
+      box-sizing: border-box;
     }
 
     /* ---- Connect screen ---- */
@@ -90,8 +95,9 @@
     #tasks-screen {
       display: flex;
       flex-direction: column;
-      height: 100%;
+      flex: 1;
       min-height: 0;
+      overflow: hidden;
     }
 
     .header {
@@ -100,6 +106,7 @@
       gap: 8px;
       padding: 10px 12px;
       border-bottom: 1px solid var(--border);
+      flex-shrink: 0;
     }
 
     #list-select {
@@ -127,6 +134,7 @@
       padding: 12px 14px;
       border-bottom: 1px solid var(--border);
       font-size: 13px;
+      flex-shrink: 0;
     }
 
     #settings-panel label {
@@ -165,6 +173,7 @@
       margin: 0;
       padding: 4px 0;
       overflow-y: auto;
+      overflow-x: hidden;
       flex: 1;
       min-height: 0;
     }
@@ -229,6 +238,7 @@
       padding: 10px 12px;
       border-top: 1px solid var(--border);
       flex-shrink: 0;
+      background: inherit;
     }
 
     #add-input {
@@ -250,6 +260,7 @@
       padding: 10px 12px;
       font-size: 12px;
       color: #e5484d;
+      flex-shrink: 0;
     }
 
     [hidden] {
@@ -287,20 +298,25 @@
   </div>
 
   <script>
+    // ---------------------------------------------------------------------
+    // 1. Configuration
+    // ---------------------------------------------------------------------
     const CLIENT_ID = '351806837945-anjvm2o97jnum79akg28jc6nut6euat7.apps.googleusercontent.com';
-
+    // Replace this with your actual deployed Cloudflare Worker URL
+    const PROXY_URL = 'https://gtasks-token-proxy.patrick-leugers.workers.dev'; 
+    const REDIRECT_URI = window.location.origin + window.location.pathname;
     const SCOPE = 'https://www.googleapis.com/auth/tasks';
 
-    const TOKEN_KEY = 'gtasks_widget_token_v1';
+    const STORAGE_KEY = 'gtasks_widget_auth_v2';
     const APPEARANCE_KEY = 'gtasks_widget_appearance_v1';
     const API_ROOT = 'https://tasks.googleapis.com/tasks/v1';
 
-    let tokenClient;
     let accessToken = null;
+    let refreshToken = null;
     let tokenExpiry = 0;
     let currentListId = null;
 
-    // ---- appearance (background color + transparency), persisted per-origin ----
+    // ---- Appearance Management ----
     function loadAppearance() {
       try {
         const raw = localStorage.getItem(APPEARANCE_KEY);
@@ -322,7 +338,6 @@
     function applyAppearance(appearance) {
       const root = document.documentElement;
       if (!appearance) {
-        // fall back to the automatic light/dark defaults defined in CSS
         root.style.removeProperty('--bg-rgb');
         root.style.removeProperty('--bg-alpha');
         return;
@@ -336,56 +351,116 @@
       return { color: dark ? '#1c1c1e' : '#ffffff', opacity: dark ? 85 : 90 };
     }
 
-    // ---- token persistence (per-origin sessionStorage, survives new-tab reloads) ----
-    function saveToken(token, expiresInSec) {
-      accessToken = token;
-      tokenExpiry = Date.now() + expiresInSec * 1000;
-      localStorage.setItem(TOKEN_KEY, JSON.stringify({ token, expiry: tokenExpiry }));
+    // ---- Token Storage & State ----
+    function saveAuthState(access, refresh, expiresInSec) {
+      accessToken = access;
+      if (refresh) refreshToken = refresh;
+      tokenExpiry = Date.now() + (expiresInSec * 1000);
+
+      localStorage.setItem(STORAGE_KEY, JSON.stringify({
+        accessToken,
+        refreshToken,
+        tokenExpiry
+      }));
     }
 
-    function loadToken() {
-      const raw = localStorage.getItem(TOKEN_KEY);
-      if (!raw) return false;
+    function loadAuthState() {
       try {
-        const { token, expiry } = JSON.parse(raw);
-        if (expiry > Date.now() + 60000) {
-          accessToken = token;
-          tokenExpiry = expiry;
-          return true;
-        }
-      } catch (e) { /* ignore corrupt entry */ }
-      return false;
+        const raw = localStorage.getItem(STORAGE_KEY);
+        if (!raw) return false;
+        const data = JSON.parse(raw);
+        accessToken = data.accessToken;
+        refreshToken = data.refreshToken;
+        tokenExpiry = data.tokenExpiry;
+        return !!refreshToken;
+      } catch (e) {
+        return false;
+      }
     }
 
-    // ---- OAuth flow ----
-    // prompt:'' = try silently (no popup) using an existing Google session/consent.
-    // forceConsent=true = show the visible Google consent popup (needs a user gesture).
-    function ensureFreshToken(callback, forceConsent) {
-      if (!forceConsent && accessToken && Date.now() < tokenExpiry - 60000) {
-        callback();
+    // ---- OAuth Engine (Code Flow via Cloudflare Proxy) ----
+    function startAuthorizationFlow() {
+      const authUrl = new URL('https://accounts.google.com/o/oauth2/v2/auth');
+      authUrl.searchParams.set('client_id', CLIENT_ID);
+      authUrl.searchParams.set('redirect_uri', REDIRECT_URI);
+      authUrl.searchParams.set('response_type', 'code');
+      authUrl.searchParams.set('scope', SCOPE);
+      authUrl.searchParams.set('access_type', 'offline');
+      authUrl.searchParams.set('prompt', 'consent');
+
+      window.location.href = authUrl.toString();
+    }
+
+    async function handleAuthorizationCode(code) {
+      try {
+        const body = new FormData();
+        body.append('code', code);
+        body.append('client_id', CLIENT_ID);
+        body.append('redirect_uri', REDIRECT_URI);
+        body.append('grant_type', 'authorization_code');
+
+        const response = await fetch(PROXY_URL, { method: 'POST', body: body });
+        if (!response.ok) throw new Error('Token exchange failed (' + response.status + ')');
+        const data = await response.json();
+
+        window.history.replaceState({}, document.title, window.location.pathname);
+        saveAuthState(data.access_token, data.refresh_token, data.expires_in);
+        init();
+      } catch (e) {
+        showError('Sign-in failed: ' + e.message);
+      }
+    }
+
+    async function refreshAccessToken() {
+      if (!refreshToken) {
+        startAuthorizationFlow();
         return;
       }
-      tokenClient.callback = (resp) => {
-        if (resp.error) {
-          if (forceConsent) {
-            showError('Google sign-in failed: ' + resp.error);
-          }
-          return;
-        }
-        saveToken(resp.access_token, resp.expires_in);
-        callback();
-      };
-      tokenClient.requestAccessToken({ prompt: forceConsent ? 'consent' : '' });
+
+      try {
+        const body = new FormData();
+        body.append('client_id', CLIENT_ID);
+        body.append('refresh_token', refreshToken);
+        body.append('grant_type', 'refresh_token');
+
+        const response = await fetch(PROXY_URL, { method: 'POST', body: body });
+        if (!response.ok) throw new Error('Refresh rejected (' + response.status + ')');
+        const data = await response.json();
+
+        saveAuthState(data.access_token, data.refresh_token || refreshToken, data.expires_in);
+      } catch (e) {
+        console.error('Silent token refresh failed:', e);
+        startAuthorizationFlow();
+      }
     }
 
-    window.onload = () => {
-      tokenClient = google.accounts.oauth2.initTokenClient({
-        client_id: CLIENT_ID,
-        scope: SCOPE,
-        callback: () => { },
+    async function ensureValidToken() {
+      // Refresh token if missing or within 5 minutes of expiring
+      if (!accessToken || Date.now() > tokenExpiry - 300000) {
+        await refreshAccessToken();
+      }
+    }
+
+    // ---- API Wrapper ----
+    async function apiFetch(url, options = {}) {
+      await ensureValidToken();
+      
+      const doFetch = () => fetch(url, {
+        ...options,
+        headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` },
       });
 
-      document.getElementById('connect-btn').onclick = () => ensureFreshToken(init, true);
+      let res = await doFetch();
+      if (res.status === 401) {
+        await refreshAccessToken();
+        res = await doFetch();
+      }
+      return res;
+    }
+
+    // ---- App Lifecycle ----
+    window.onload = async () => {
+      document.getElementById('connect-btn').onclick = () => startAuthorizationFlow();
       document.getElementById('refresh-btn').onclick = () => loadTasks(currentListId);
       document.getElementById('add-form').onsubmit = (e) => {
         e.preventDefault();
@@ -396,7 +471,7 @@
         loadTasks(currentListId);
       };
 
-      // ---- settings panel wiring ----
+      // Settings wiring
       const settingsBtn = document.getElementById('settings-btn');
       const settingsPanel = document.getElementById('settings-panel');
       const colorInput = document.getElementById('bg-color-input');
@@ -427,12 +502,17 @@
         applyAppearance(null);
       };
 
-      if (loadToken()) {
+      // Check if arriving back from Google OAuth redirect
+      const urlParams = new URLSearchParams(window.location.search);
+      const authCode = urlParams.get('code');
+
+      if (authCode) {
+        await handleAuthorizationCode(authCode);
+      } else if (loadAuthState()) {
         init();
       } else {
-        // Try a silent, popup-free auth first (works if you've already granted
-        // consent in this browser before). Falls back to showing Connect button.
-        ensureFreshToken(init, false);
+        document.getElementById('connect-screen').hidden = false;
+        document.getElementById('tasks-screen').hidden = true;
       }
     };
 
@@ -442,21 +522,7 @@
       loadTaskLists();
     }
 
-    // ---- API helpers ----
-    async function apiFetch(url, options = {}) {
-      const doFetch = () => fetch(url, {
-        ...options,
-        headers: { ...(options.headers || {}), Authorization: `Bearer ${accessToken}` },
-      });
-      let res = await doFetch();
-      if (res.status === 401) {
-        // token expired or revoked mid-session — re-prompt for consent
-        await new Promise((resolve) => ensureFreshToken(resolve, true));
-        res = await doFetch();
-      }
-      return res;
-    }
-
+    // ---- Tasks API Logic ----
     async function loadTaskLists() {
       const res = await apiFetch(`${API_ROOT}/users/@me/lists`);
       if (!res.ok) return showError('Could not load task lists (' + res.status + ')');
@@ -494,9 +560,6 @@
       renderTaskTree(roots, listId, ul, 0);
     }
 
-    // Google returns subtasks as regular task objects with a `parent` field
-    // pointing at their parent task's id. Group them so subtasks render
-    // nested under their parent instead of as siblings.
     function buildTaskTree(items) {
       const byId = {};
       items.forEach((t) => { byId[t.id] = { ...t, children: [] }; });
@@ -516,9 +579,6 @@
       return roots;
     }
 
-    // Renders a flat <li> list with indentation per depth (rather than nested
-    // <ul>s) so drag-and-drop reordering logic only has to compare a
-    // data-parent-id attribute, not walk the DOM tree.
     function renderTaskTree(tasks, listId, container, depth) {
       tasks.forEach((task) => {
         const li = document.createElement('li');
@@ -549,10 +609,6 @@
       });
     }
 
-    // ---- Drag-and-drop reordering ----
-    // Only allows reordering within the same parent group (i.e. among top-level
-    // tasks, or among the subtasks of one parent) — dragging a task to become a
-    // subtask of a different parent isn't handled here.
     let draggedEl = null;
 
     function attachDragHandlers(li, listId) {
@@ -575,7 +631,7 @@
         e.preventDefault();
         li.classList.remove('drag-over');
         if (!draggedEl || draggedEl === li) return;
-        if (draggedEl.dataset.parentId !== li.dataset.parentId) return; // different group — ignore
+        if (draggedEl.dataset.parentId !== li.dataset.parentId) return;
         const ul = document.getElementById('task-list');
         ul.insertBefore(draggedEl, li);
         const parentId = draggedEl.dataset.parentId || null;
